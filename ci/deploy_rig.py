@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""The rig deploy steps of RecipeMaker64: one step per `.deploy` line, each an entry point of this file. The close runs
+them in file order on the rig at the landed revision, from the root of the tree, with
+LANDED_Projects_AbuN64_RecipeMaker64 set and `deploy-env TOOLKIT=<live link>` in the environment; it appends its own
+landing arguments, which no step reads.
+recipemaker is pinned by no other repository: the toolkit's installed `decomp tools deploy` installs the package `recipemaker` at
+the landed SHA and carries every other installed package over as it is. A step prints its facts and exits 0, or prints
+one line on stderr and exits 1; it calls no other tool of the close.
+
+  name       the toolkit's own `decomp tools name` (AbuDecomp64's engine owns the rule; this repository holds no copy)
+             answers the build's NAME, a digest of every package commit the new toolkit holds (the live toolkit's, with
+             recipemaker at the landed SHA), never the SHA alone. A live toolkit whose decomp lacks `tools name` refuses:
+             deploy AbuDecomp64 first;
+  build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package recipemaker --sha SHA`
+             builds a fresh venv through a private `<toolkit>-stage` link, BUILD is linked to it, and the full test
+             suite runs in the tree with BUILD's python and the tree's src first on the import path. A failing suite
+             exits non-zero and the live link stays; on exit 0 the close switches the live link to BUILD;
+  readback   the live link resolves to BUILD and the installed commit of recipemaker equals the landed SHA. A mismatch
+             refuses (fix forward, no rollback).
+
+  deploy-env TOOLKIT=/home/abu/venv-decomp
+  rig run ci/deploy_rig.py name
+  rig activate ci/deploy_rig.py /home/abu/venv-decomp build
+  rig run ci/deploy_rig.py readback"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from collections.abc import Callable
+
+ENV = "LANDED_Projects_AbuN64_RecipeMaker64"
+SHA = re.compile(r"[0-9a-f]{40}")
+NAME_RE = re.compile(r"[0-9a-f]{12}")
+
+# bash(script, args) runs one of the scripts below and returns its exit code and, when captured, its stdout.
+Bash = Callable[..., "tuple[int, str]"]
+
+# NAME runs in the tree before the activation and answers the build's name: the engine's JSON envelope on stdout,
+# whose result.name is the digest of the whole content. Arguments: SHA TOOLKIT.
+NAME = r"""set -u
+sha=$1 toolkit=$2
+(cd "$HOME" && "$toolkit/bin/decomp" tools name --package recipemaker --sha "$sha" --carry-from "$toolkit") \
+  || { echo "name-error: decomp tools name exit $? (the live decomp needs it: deploy AbuDecomp64 first)" >&2
+       exit 1; }
+"""
+
+# BUILD runs inside the activation job with BUILD (<toolkit>.<name>) set by the close. The stage link starts at the
+# live toolkit, so the packages `decomp tools deploy` carries over are the live ones; it builds
+# `<toolkit>-stage.<name>` (or -N when that name is taken) and swaps only the stage link. BUILD becomes a link to that
+# venv: the close's switch is the only way a venv goes live. Arguments: SHA TOOLKIT NAME.
+BUILD = r"""set -u
+sha=$1 toolkit=$2 name=$3
+: "${BUILD:?the close sets BUILD for an activation}"
+stage=$toolkit-stage
+ln -sfn "$(readlink -f "$toolkit")" "$stage" || exit 1
+(cd "$HOME" && "$toolkit/bin/decomp" tools deploy --package recipemaker --sha "$sha" --venv "$stage") \
+  || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
+built=$(readlink -f "$stage")
+case $built in
+  "$stage.$name" | "$stage.$name"-[0-9]*) ;;
+  *) echo "deploy-error: $stage reads $built, not the build $name of $sha" >&2; exit 1 ;;
+esac
+ln -sfn "$built" "$BUILD" || exit 1
+echo "deploy-build: $built"
+"""
+
+# SUITE runs in the tree after BUILD (Arguments: SHA), with BUILD set: the full suite on BUILD's python with the
+# tree's src first on the import path. One `suite-KEY: value` line per fact, then the suite's own output.
+SUITE = r"""set -u
+sha=$1
+echo "suite-checkout: $(pwd -P)"
+echo "suite-sha: $(git rev-parse HEAD)"
+head=$(git rev-parse HEAD)
+[ "$head" = "$sha" ] || { echo "suite: the tree is at $head, not the landed $sha" >&2; exit 1; }
+export PYTHONPATH=$PWD/src PYTHONDONTWRITEBYTECODE=1
+imported=$("$BUILD/bin/python" -c 'import os, recipemaker; print(os.path.realpath(recipemaker.__file__))') || exit 9
+echo "suite-import: $imported"
+"$BUILD/bin/python" -m pytest -q -p no:cacheprovider -n "${JOBS:?the close sets JOBS}" --rootdir "$PWD" tests
+"""
+
+# READBACK runs in the tree after the switch. Arguments: SHA TOOLKIT BUILD.
+READBACK = r"""set -u
+sha=$1 toolkit=$2 build=$3
+live=$(readlink -f "$toolkit") || exit 9
+want=$(readlink -f "$build") || exit 9
+[ "$live" = "$want" ] || { echo "readback: $toolkit reads $live, not $build ($want)" >&2; exit 1; }
+"$toolkit/bin/python" - "$sha" <<'PY'
+import importlib.metadata
+import json
+import sys
+
+try:
+    direct = json.loads(importlib.metadata.distribution("recipemaker").read_text("direct_url.json") or "{}")
+    installed = direct.get("vcs_info", {}).get("commit_id", "none")
+except importlib.metadata.PackageNotFoundError:
+    installed = "not installed"
+print(f"readback-pin: recipemaker {installed}", flush=True)
+if installed != sys.argv[1]:
+    sys.exit(f"readback: recipemaker is {installed}, the landed commit is {sys.argv[1]}")
+PY
+"""
+
+
+class Refused(Exception):
+    """One line cause of a refusal or failed step."""
+
+
+def bash(script: str, *args: str, capture: bool = False) -> tuple[int, str]:
+    done = subprocess.run(
+        ["bash", "-c", script, "step", *args], stdout=subprocess.PIPE if capture else None, text=True, check=False
+    )
+    return done.returncode, done.stdout or ""
+
+
+def last_line(text: str, default: object) -> str:
+    return text.strip().splitlines()[-1] if text.strip() else str(default)
+
+
+def build_name(text: str) -> str:
+    """The name the engine answered: result.name of the JSON envelope on the name step's stdout."""
+    for line in reversed(text.splitlines()):
+        try:
+            name = json.loads(line)["result"]["name"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if isinstance(name, str) and NAME_RE.fullmatch(name):
+            return name
+    raise Refused(f"the name step answered no build name: {last_line(text, 'no output')}")
+
+
+def landed(environ: dict[str, str]) -> tuple[str, str]:
+    """The landed SHA and the live toolkit link, each from its own explicit variable."""
+    sha = environ.get(ENV, "")
+    if not SHA.fullmatch(sha):
+        raise Refused(f"{ENV} is not a 40-hex SHA: {sha!r}")
+    toolkit = environ.get("TOOLKIT", "")
+    if not toolkit.startswith("/"):
+        raise Refused(f"TOOLKIT is not an absolute path (a `deploy-env TOOLKIT=<live link>` line): {toolkit!r}")
+    return sha, toolkit
+
+
+def name(sha: str, toolkit: str, run: Bash) -> str:
+    code, out = run(NAME, sha, toolkit, capture=True)
+    sys.stdout.write(out)
+    if code:
+        raise Refused(f"name exit {code}: {last_line(out, 'no output')}")
+    return build_name(out)
+
+
+def step_name(sha: str, toolkit: str, run: Bash) -> None:
+    sys.stdout.write(f"name: {name(sha, toolkit, run)}\n")
+    sys.stdout.flush()
+
+
+def step_build(sha: str, toolkit: str, run: Bash) -> None:
+    revision = name(sha, toolkit, run)
+    code, _ = run(BUILD + SUITE, sha, toolkit, revision)
+    if code:
+        raise Refused(f"build exit {code}, links unchanged")
+
+
+def step_readback(sha: str, toolkit: str, run: Bash) -> None:
+    code, _ = run(READBACK, sha, toolkit, f"{toolkit}.{sha}")
+    if code:
+        raise Refused(f"readback exit {code}")
+
+
+STEPS = {"name": step_name, "build": step_build, "readback": step_readback}
+
+
+def main(argv: list[str] | None = None, environ: dict[str, str] | None = None, run: Bash = bash) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        step = STEPS.get(argv[0] if argv else "")
+        if step is None:
+            raise Refused(f"the step is one of {', '.join(STEPS)}, not {argv[0] if argv else 'nothing'!r}")
+        step(*landed(dict(os.environ) if environ is None else environ), run)
+    except Refused as refusal:
+        sys.stderr.write(f"deploy refused: {refusal}\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
