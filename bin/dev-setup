@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
+# The repo-local venv: our own dependencies and the dev tools from pyproject.toml, with unbake (and the abucache it
+# stands on) taken from the toolkit the installed `decomp` command names (DESIGN R5: the toolkit holds the one installed
+# unbake, set by its own land). unbake is on no index, so pip never resolves it.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-# pip keeps an installed unbake whose version matches even when the pinned commit moved, so a pin bump would go unapplied.
-.venv/bin/python - <<'EOF'
-import json, re, subprocess, sys, tomllib
-from importlib import metadata
-req = next(d for d in tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"] if d.startswith("unbake"))
-pin = re.search(r"@([0-9a-f]{40})", req).group(1)
-have = json.loads(metadata.distribution("unbake").read_text("direct_url.json") or "{}").get("vcs_info", {}).get("commit_id")
-if have != pin:
-    print(f"unbake {have} -> {pin}", file=sys.stderr)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", req])
-EOF
+decomp=$(command -v decomp) || { echo "bin/dev-setup: no decomp command on PATH; install the toolkit first" >&2; exit 1; }
+toolkit_python=$(sed -n '1s/^#!//p' "$decomp")
+[[ -x "$toolkit_python" ]] || { echo "bin/dev-setup: $decomp names no toolkit interpreter (first line: $(head -1 "$decomp"))" >&2; exit 1; }
+"$toolkit_python" -c 'import abucache, unbake' || { echo "bin/dev-setup: the toolkit at $toolkit_python has no unbake" >&2; exit 1; }
+"$toolkit_python" -m venv .venv
+# Everything pyproject.toml names except unbake comes from the index at its pin; recipemaker itself installs editable.
+.venv/bin/python - <<'PY' | xargs -d '\n' .venv/bin/pip install --quiet
+import tomllib
+project = tomllib.load(open("pyproject.toml", "rb"))["project"]
+for requirement in [*project["dependencies"], *project["optional-dependencies"]["dev"]]:
+    if requirement != "unbake":
+        print(requirement)
+PY
+.venv/bin/pip install --quiet --no-deps -e .
+# The toolkit's site-packages comes last on the path, so the venv's own packages win and only unbake and abucache come from it.
+toolkit_site=$("$toolkit_python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+.venv/bin/python -c 'import site, sys; open(site.getsitepackages()[0] + "/toolkit.pth", "w").write(sys.argv[1] + "\n")' "$toolkit_site"
+.venv/bin/python -c 'import abucache, unbake; print("unbake from", unbake.__file__)'

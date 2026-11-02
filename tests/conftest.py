@@ -8,10 +8,13 @@ from typing import Any
 
 import fixture
 import pytest
+from abucache import memo, pool, stages
 from abucache.store import forget
 from unbake import config as configuration
-from unbake import effort, pool
+from unbake import effort  # noqa: F401  (registers its stage listener before the snapshot below)
 from unbake.contracts import Config
+
+_LISTENERS = list(stages._listeners)  # the listeners unbake registered at import: every test starts from these
 
 TOOLCHAIN_ROW = {
     "family": "gcc",
@@ -69,8 +72,8 @@ def cfg(tmp_path: Path, toolchains: dict[str, Any]) -> Config:
 def _fresh_module_state():
     """Every test starts with empty process-wide caches, so xdist workers never share state between tests."""
     forget()
-    effort._memo.clear()
-    effort._listeners.clear()
+    memo._clear()
+    stages._listeners[:] = _LISTENERS
     pool._drop_executor()
     yield
 
