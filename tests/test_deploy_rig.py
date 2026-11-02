@@ -14,7 +14,7 @@ deploy_rig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
-TOOLKIT = "/home/abu/venv-decomp"
+TOOLKIT = f"{tempfile.gettempdir()}/example/venv-decomp"  # the step takes it from its environment: any absolute path
 NAME = "0123456789ab"  # the engine's digest of the whole content; never the SHA
 ENVIRON = {deploy_rig.ENV: SHA, "TOOLKIT": TOOLKIT}
 ENVELOPE = json.dumps({"result": {"name": NAME}}) + "\n"
@@ -108,11 +108,12 @@ def test_the_deploy_file_is_the_step_grammar():
     root = Path(__file__).parent.parent
     lines = (root / ".deploy").read_text().splitlines()
     assert lines == [
-        f"deploy-env TOOLKIT={TOOLKIT}",
+        "deploy-input TOOLKIT",
         "rig run ci/deploy_rig.py name",
-        f"rig activate ci/deploy_rig.py {TOOLKIT} build",
+        "rig activate ci/deploy_rig.py $TOOLKIT build",
         "rig run ci/deploy_rig.py readback",
     ]
+    assert "deploy-env" not in "\n".join(lines) and "/home" not in "\n".join(lines)
     assert os.access(root / "ci" / "deploy_rig.py", os.X_OK)
 
 
