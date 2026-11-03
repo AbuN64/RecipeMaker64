@@ -1,17 +1,11 @@
 #!/bin/sh
-# The CI gates: lint, format, strict typing and the test suite (run bin/dev-setup or pip install '.[dev]' first).
+# The CI gates: prepare the private environment, then lint, format, strict typing and tests.
 set -eu
 cd "$(dirname "$0")/.."
 ci/abucache-audit
-PY="${PYTHON:-python3}"
-[ -x .venv/bin/python ] && PY=.venv/bin/python
-# A python without the dev tools (ruff, mypy, pytest, types-jsonschema) falls back to the seat venv ($ABU_VENV, default
-# ~/venv-decomp), which `pip install '.[dev]'` fills; the gate never skips for a missing tool.
-if ! "$PY" -c 'import ruff, mypy, pytest, importlib.metadata as m; m.version("types-jsonschema")' >/dev/null 2>&1; then
-  PY="${ABU_VENV:-$HOME/venv-decomp}/bin/python"
-fi
+PY="$(python3 ci/ensure_venv.py)"
 export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
-"$PY" -m ruff check src tests
-"$PY" -m ruff format --check src tests
+"$PY" -m ruff check src tests ci/ensure_venv.py
+"$PY" -m ruff format --check src tests ci/ensure_venv.py
 "$PY" -m mypy --strict src
 "$PY" -m pytest -q -n auto

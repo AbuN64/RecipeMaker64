@@ -11,6 +11,7 @@ license = { file = "LICENSE" }
 classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
 requires-python = ">=3.13"
 dependencies = [
+  "abucache",
   "jsonschema==4.26.0",
   "pycparser==3.0",
   "unbake",
@@ -44,5 +45,9 @@ python_version = "3.13"
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["unbake", "unbake.*", "pycparser", "pycparser.*"]
+module = ["abucache", "abucache.*", "unbake", "unbake.*", "pycparser", "pycparser.*"]
 follow_untyped_imports = true
+
+[tool.bootstrap.sources]
+abucache = "https://github.com/AbuN64/cache-64"
+unbake = "https://github.com/AbuN64/cake-unbake-64"

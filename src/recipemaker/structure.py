@@ -23,6 +23,7 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from abucache import stages as cache_stages
 from unbake import api
 from unbake.contracts import Config, Finding, Json, Refusal, digest, file_facts
 
@@ -43,12 +44,12 @@ def say(text: str) -> None:
 def narrated(name: str) -> Iterator[None]:
     """A stage of `recipe structure`, told on stderr in unbake's spelling (`LABEL started`, then `LABEL 1.2s 1.00
     cores 0 jobs`) and recorded in unbake's stage tree, so a long run is never silent."""
-    label, began, spent = f"structure > {name}", time.monotonic(), sum(os.times()[:4])
-    say(f"{label} started")
-    with recipe_host.stage(f"structure.{name}"):
+    with cache_stages.timed(f"structure.{name}") as began:
+        label, spent = f"structure > {name}", sum(os.times()[:4])
+        say(f"{label} started")
         yield
-    wall = time.monotonic() - began
-    say(f"{label} {wall:.1f}s {(sum(os.times()[:4]) - spent) / max(wall, 1e-9):.2f} cores 0 jobs")
+        wall = began.seconds
+        say(f"{label} {wall:.1f}s {(sum(os.times()[:4]) - spent) / max(wall, 1e-9):.2f} cores 0 jobs")
 
 
 def _refusal(document: Json) -> Refusal:

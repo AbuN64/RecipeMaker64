@@ -103,11 +103,10 @@ def test_the_fakes_replace_recipemaker_seams_or_api_exports():
         r"^\s*(?:import|from) (?:threading|concurrent|contextvars)\b",
         r"^\s*(?:import|from) hashlib\b",
         r"\b_CODE\b",
-        r"^\s*(?:import|from) abucache\b",
-        r"^\s*from functools import .*\bcache\b|^\s*@(?:functools\.)?cache\b",
+        r"^\s*from functools import .*\b(?:lru_)?cache\b|^\s*@(?:functools\.)?(?:lru_)?cache\b",
     ],
 )
-def test_recipemaker_has_no_threads_hashing_code_tags_process_caches_or_abucache(pattern):
+def test_recipemaker_has_no_threads_hashing_code_tags_or_local_cache_decorators(pattern):
     found = [p.name for p in FILES if re.search(pattern, p.read_text(encoding="utf-8"), re.M)]
     assert found == []
 

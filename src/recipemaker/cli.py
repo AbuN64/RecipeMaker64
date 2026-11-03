@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import sys
-import time
 import traceback
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -13,6 +12,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from abucache import memo
+from abucache import stages as cache_stages
 from unbake import api
 from unbake.contracts import Config, Finding, Json, Refusal
 
@@ -338,57 +339,66 @@ def _parked(root: Path) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    memo.forget("recipemaker.locals.placeholder")
     args = _parser().parse_args(list(sys.argv[1:] if argv is None else argv))
     for line in _parked(args.project or Path.cwd()):
         sys.stderr.write(line + "\n")
-    began = time.monotonic()
-    host = args.host or (Path(os.environ["UNBAKE_HOST"]) if os.environ.get("UNBAKE_HOST") else None)
-    host = host or _default_host()
-    result: dict[str, Any] | None = None
-    code, findings = 0, []
-    loaded: Config | None = None
-    try:
-        with lifecycle.bound():
-            if host is None:
-                raise Refusal(Finding("config.missing", _NO_HOST))
-            os.environ["UNBAKE_HOST"] = str(host.resolve())  # every unbake command this one runs reads the same host
-            ledger_tree = (
-                namebook.default_tree()
-                if args.verb == "name" and (getattr(args, "ledger", None) or args.action in ("status", "return"))
-                else None
+    with cache_stages.timed("recipemaker.cli.main.began") as began:
+        host = args.host or (Path(os.environ["UNBAKE_HOST"]) if os.environ.get("UNBAKE_HOST") else None)
+        host = host or _default_host()
+        result: dict[str, Any] | None = None
+        code, findings = 0, []
+        loaded: Config | None = None
+        try:
+            with lifecycle.bound():
+                if host is None:
+                    raise Refusal(Finding("config.missing", _NO_HOST))
+                os.environ["UNBAKE_HOST"] = str(
+                    host.resolve()
+                )  # every unbake command this one runs reads the same host
+                ledger_tree = (
+                    namebook.default_tree()
+                    if args.verb == "name" and (getattr(args, "ledger", None) or args.action in ("status", "return"))
+                    else None
+                )
+                loaded = api.load(args.project or ledger_tree or Path.cwd(), host)
+                given = {k: v for k, v in vars(args).items() if k not in ("host", "project")}
+                if args.verb == "style":
+                    given["paths"] = [*given["paths"], *(given.pop("only") or [])]
+                if args.verb in ("structure", "apply", "name"):  # these verbs call unbake
+                    given["host"] = host
+                # each unbake command a verb runs takes the shared tree lock itself; a try holds
+                # none across its compiles
+                # of a private candidate, which read nothing a ship rewrites. Only `apply` writes the tree.
+                with (
+                    api.tree_lock(loaded, exclusive=True, who="apply", say=_say)
+                    if args.verb == "apply"
+                    else nullcontext()
+                ):
+                    result = dict(_VERBS[args.verb](loaded, given))
+                code = int(result.pop("exit", 0))
+        except Refusal as refusal:
+            code, findings = 1, list(refusal.findings)
+        except world.AsmMissing as gone:
+            code, findings = (
+                3,
+                [Finding("internal.race", f"{gone}: retry the same command", action=f"recipe {args.verb}")],
             )
-            loaded = api.load(args.project or ledger_tree or Path.cwd(), host)
-            given = {k: v for k, v in vars(args).items() if k not in ("host", "project")}
-            if args.verb == "style":
-                given["paths"] = [*given["paths"], *(given.pop("only") or [])]
-            if args.verb in ("structure", "apply", "name"):  # these verbs call unbake
-                given["host"] = host
-            # each unbake command a verb runs takes the shared tree lock itself; a try holds none across its compiles
-            # of a private candidate, which read nothing a ship rewrites. Only `apply` writes the tree.
-            with (
-                api.tree_lock(loaded, exclusive=True, who="apply", say=_say) if args.verb == "apply" else nullcontext()
-            ):
-                result = dict(_VERBS[args.verb](loaded, given))
-            code = int(result.pop("exit", 0))
-    except Refusal as refusal:
-        code, findings = 1, list(refusal.findings)
-    except world.AsmMissing as gone:
-        code, findings = 3, [Finding("internal.race", f"{gone}: retry the same command", action=f"recipe {args.verb}")]
-    except Exception as exc:
-        again = f"recipe {args.verb}"
-        code, findings = 3, [Finding("internal.error", f"{_where(exc)}: retry the same command once", action=again)]
-    if result is not None:
-        result["wall_s"] = round(time.monotonic() - began)
-        stream = result.pop("stream", "")
-        if stream and not args.json:  # the patch owns stdout so that `recipe structure | jq -r .patch` works
-            sys.stdout.write(stream)
-            sys.stderr.write(render(args.verb, result) + "\n")
+        except Exception as exc:
+            again = f"recipe {args.verb}"
+            code, findings = 3, [Finding("internal.error", f"{_where(exc)}: retry the same command once", action=again)]
+        if result is not None:
+            result["wall_s"] = round(began.seconds)
+            stream = result.pop("stream", "")
+            if stream and not args.json:  # the patch owns stdout so that `recipe structure | jq -r .patch` works
+                sys.stdout.write(stream)
+                sys.stderr.write(render(args.verb, result) + "\n")
+            else:
+                _emit(render(args.verb, result), {"ok": code == 0, **result}, args.json)
         else:
-            _emit(render(args.verb, result), {"ok": code == 0, **result}, args.json)
-    else:
-        lines = [line for f in findings for line in _finding(f)]
-        if lines[-1] == f"next: recipe {args.verb}" and findings[-1].key not in _RETRY:
-            lines[-1] = "next: recipe name next"  # a refusal never sends the caller back to its command
-        document = {"ok": False, "findings": [asdict(f) for f in findings]}
-        _emit("\n".join(lines), document, args.json)
-    return code
+            lines = [line for f in findings for line in _finding(f)]
+            if lines[-1] == f"next: recipe {args.verb}" and findings[-1].key not in _RETRY:
+                lines[-1] = "next: recipe name next"  # a refusal never sends the caller back to its command
+            document = {"ok": False, "findings": [asdict(f) for f in findings]}
+            _emit("\n".join(lines), document, args.json)
+        return code

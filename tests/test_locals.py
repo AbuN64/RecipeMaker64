@@ -238,3 +238,23 @@ def test_whole_tracked_census_uses_the_canonical_api(monkeypatch, tmp_path):
     assert got["census"] == result and seen == [config]
     with pytest.raises(Exception, match="whole tracked census"):
         naming.count(config, {"steps": "C", "targets": ["src"]})
+
+
+def test_placeholder_memo_reuses_only_its_operation_and_input(monkeypatch):
+    from abucache import memo
+
+    calls = []
+
+    def table(path):
+        calls.append(path)
+        return {"comments": {"m2c_local": "arg[0-9]+"}}
+
+    memo.forget("recipemaker.locals.placeholder")
+    monkeypatch.setattr(locals_, "table", table)
+    assert locals_.placeholder("arg1")
+    assert not locals_.placeholder("count")
+    assert calls == ["knowledge/style.toml"]
+    key = ("recipemaker.locals.placeholder", "knowledge/style.toml")
+    assert memo.peek(key).pattern == "arg[0-9]+"
+    assert memo.peek(("different.operation", "knowledge/style.toml")) is None
+    assert memo.peek(("recipemaker.locals.placeholder", "different/input.toml")) is None

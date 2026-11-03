@@ -4,9 +4,7 @@
 # abucache owner and leaves the list; nothing joins it.
 set -eu
 cd "$(dirname "$0")/.."
-OWNED='src/recipemaker/cli.py
-src/recipemaker/host.py
-src/recipemaker/locals_.py
+OWNED='src/recipemaker/host.py
 src/recipemaker/namebook.py
 src/recipemaker/structure.py'
 new="$(grep -rlEi --include='*.py' --include='*.sh' --include='*.mk' --include=Makefile --exclude='test_*.py' \

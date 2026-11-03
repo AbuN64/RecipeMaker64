@@ -9,9 +9,9 @@ Three forms of evidence, each re-derived from the source when a rename is submit
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
+from abucache import memo
 from unbake import api
 
 from recipemaker import access, cparse, table
@@ -23,9 +23,11 @@ _MEMBER = re.compile(r"(?:->|\.)\s*([A-Za-z_]\w*)")
 _KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "else", "do", "case"}
 
 
-@lru_cache(maxsize=1)
 def _placeholder() -> re.Pattern[str]:
-    return re.compile(table("knowledge/style.toml")["comments"]["m2c_local"])
+    return memo.memo(
+        ("recipemaker.locals.placeholder", "knowledge/style.toml"),
+        lambda: re.compile(table("knowledge/style.toml")["comments"]["m2c_local"]),
+    )
 
 
 def placeholder(name: str) -> bool:

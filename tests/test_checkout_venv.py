@@ -116,34 +116,32 @@ def test_setup_clears_moved_environment_and_test_accepts_it(checkout: Path, tmp_
     (checkout / ".venv/pyvenv.cfg").write_text("command = /usr/bin/python3 -m venv /old/.venv\n")
     tools = tmp_path / "tools"
     tools.mkdir()
-    toolkit_site = tmp_path / "toolkit-site"
-    toolkit_site.mkdir()
-    for module in ("abucache", "unbake"):
-        (toolkit_site / f"{module}.py").write_text("")
+    (checkout / "ci").mkdir()
+    shutil.copy2(ROOT / "ci/ensure_venv.py", checkout / "ci/ensure_venv.py")
     wrapper = tools / "python3"
-    pip_stub = '\nfrom pathlib import Path\nwith Path("calls").open("a") as log: log.write("pip\\n")\n'
     executable(
         wrapper,
         f"#!{sys.executable}\n"
-        "import json, pathlib, subprocess, sys\n"
-        "args = sys.argv[1:]\n"
-        "with open('setup-calls', 'a') as log: log.write(json.dumps(args) + '\\n')\n"
-        "if args[:2] == ['-c', 'import abucache, unbake']: sys.exit(0)\n"
-        f"if args[:1] == ['-c']: print({str(toolkit_site)!r}); sys.exit(0)\n"
-        f"subprocess.run([{sys.executable!r}, *args], check=True)\n"
-        "pip = pathlib.Path('.venv/bin/pip')\n"
-        "pathlib.Path('generated-pip').write_text(pip.read_text())\n"
-        "header = pip.read_text().split('import ', 1)[0]\n"
-        f"pip.write_text(header + {pip_stub!r})\n",
+        "import importlib.util, json, pathlib, subprocess, sys\n"
+        "spec = importlib.util.spec_from_file_location('bootstrap', sys.argv[1])\n"
+        "bootstrap = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(bootstrap)\n"
+        "def run(args, **kwargs):\n"
+        "    with open('setup-calls', 'a') as log: log.write(json.dumps(args) + '\\n')\n"
+        "    if args[1:3] == ['-m', 'venv']:\n"
+        f"        subprocess.run([{sys.executable!r}, '-m', 'venv', '--clear', "
+        "'--without-pip', args[-1]], check=True)\n"
+        "bootstrap.requirements = lambda root, lookup: []\n"
+        "print(bootstrap.ensure(pathlib.Path.cwd(), run=run))\n",
     )
-    executable(tools / "decomp", f"#!{wrapper}\n")
     result = invoke(checkout, script="dev-setup", path=tools)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not stale.exists()
     calls = [json.loads(line) for line in (checkout / "setup-calls").read_text().splitlines()]
-    assert ["-m", "venv", "--clear", ".venv"] in calls
+    assert calls[0][1:] == ["-m", "venv", "--clear", str(checkout / ".venv")]
+    assert len([call for call in calls if call[1:3] == ["-m", "pip"]]) == 2
     assert (checkout / ".venv/pyvenv.cfg").read_text().split("command = ")[1].strip().endswith(f" {checkout}/.venv")
-    assert f"{checkout}/.venv/bin/python" in (checkout / "generated-pip").read_text()
+    assert (checkout / ".venv/.pyproject.sha256").is_file()
     (checkout / "calls").unlink(missing_ok=True)
     fake_python(checkout)
     result = invoke(checkout, "-k", "after setup")

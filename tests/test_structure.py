@@ -5,6 +5,7 @@ patch built from its moves. The fixture is the evidence of 48 real RageWars modu
 import json
 import re
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -497,10 +498,21 @@ def test_build_tells_progress_and_the_stage_lines_go_to_stderr(tmp_path, capsys,
     got = structure.build(root, moves, {}.get, {}, heard.append)
     assert any("build 0/1 moves" in line for line in heard) and any("diff of" in line for line in heard)
     assert got["moves"] == 1
+    completed = []
+
+    @contextmanager
+    def timed(name):
+        try:
+            yield SimpleNamespace(seconds=2.125)
+        finally:
+            completed.append(name)
+
+    monkeypatch.setattr(structure.cache_stages, "timed", timed)
     with structure.narrated("probe"):
         pass
     out = capsys.readouterr()
-    assert out.out == "" and "structure > probe started" in out.err and "structure > probe 0." in out.err
+    assert out.out == "" and "structure > probe started" in out.err and "structure > probe 2.1s" in out.err
+    assert completed == ["structure.probe"]
 
 
 def _fake_unbake(monkeypatch, answers):

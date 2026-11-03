@@ -343,3 +343,52 @@ def test_the_slice_pack_and_auto_results_are_said_in_a_line_each():
         "3 rows (sdk 1, strings 2) in /a.jsonl",
         "judged out: {'strings': 2}",
     ]
+
+
+def test_command_reloads_placeholder_knowledge(wired, monkeypatch, capsys):
+    from recipemaker import locals_
+
+    patterns = iter(["arg[0-9]+", "temp[0-9]+"])
+    monkeypatch.setattr(locals_, "table", lambda path: {"comments": {"m2c_local": next(patterns)}})
+    seen = []
+
+    def style(config, params):
+        seen.append((locals_.placeholder("arg1"), locals_.placeholder("temp1")))
+        return {**RESULTS["style"], "findings": []}
+
+    _style(monkeypatch, style)
+    assert cli.main(["--host", str(wired.config.project.root / "host.toml"), "style"]) == 0
+    assert cli.main(["--host", str(wired.config.project.root / "host.toml"), "style"]) == 0
+    assert seen == [(True, False), (False, True)]
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_public_command_duration_is_owned_and_completed(wired, monkeypatch, capsys, refused):
+    events = []
+
+    @contextmanager
+    def timed(name):
+        from types import SimpleNamespace
+
+        events.append("open")
+        try:
+            yield SimpleNamespace(seconds=7.6)
+        finally:
+            events.append("closed")
+
+    def operation(config, params):
+        if refused:
+            raise Refusal(Finding("probe.failed", "broken"))
+        return dict(RESULTS["style"])
+
+    monkeypatch.setattr(cli.cache_stages, "timed", timed)
+    _style(monkeypatch, operation)
+    assert cli.main(["--host", "/work/host.toml", "style", "--json"]) == int(refused)
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is not refused
+    if refused:
+        assert body["findings"][0]["key"] == "probe.failed"
+    else:
+        assert body["wall_s"] == 8
+    assert events == ["open", "closed"]
