@@ -8,7 +8,7 @@ decomp=$(command -v decomp) || { echo "bin/dev-setup: no decomp command on PATH;
 toolkit_python=$(sed -n '1s/^#!//p' "$decomp")
 [[ -x "$toolkit_python" ]] || { echo "bin/dev-setup: $decomp names no toolkit interpreter (first line: $(head -1 "$decomp"))" >&2; exit 1; }
 "$toolkit_python" -c 'import abucache, unbake' || { echo "bin/dev-setup: the toolkit at $toolkit_python has no unbake" >&2; exit 1; }
-"$toolkit_python" -m venv .venv
+"$toolkit_python" -m venv --clear .venv
 # Everything pyproject.toml names except unbake comes from the index at its pin; recipemaker itself installs editable.
 .venv/bin/python - <<'PY' | xargs -d '\n' .venv/bin/pip install --quiet
 import tomllib
