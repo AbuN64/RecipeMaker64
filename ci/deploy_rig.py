@@ -4,7 +4,8 @@ them in file order on the rig at the landed revision, from the root of the tree,
 LANDED_Projects_AbuN64_RecipeMaker64 set and `deploy-env TOOLKIT=<live link>` in the environment; it appends its own
 landing arguments, which no step reads.
 recipemaker is pinned by no other repository: the toolkit's installed `decomp tools deploy` installs the package `recipemaker` at
-the landed SHA and carries every other installed package over as it is. A step prints its facts and exits 0, or prints
+the landed SHA and carries every other installed package over as it is. The toolkit link itself is first built by AbuDecomp64's
+one bootstrap, `decomp tools install --venv <live link>` (from AD64 main's pyproject.toml; no copied venv, no hand pip). A step prints its facts and exits 0, or prints
 one line on stderr and exits 1; it calls no other tool of the close.
 
   name       the toolkit's own `decomp tools name` (AbuDecomp64's engine owns the rule; this repository holds no copy)
